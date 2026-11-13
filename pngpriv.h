@@ -487,7 +487,11 @@
 #define PNG_FLAG_BENIGN_ERRORS_WARN     0x100000U /* Added to libpng-1.4.0 */
 #define PNG_FLAG_APP_WARNINGS_WARN      0x200000U /* Added to libpng-1.6.0 */
 #define PNG_FLAG_APP_ERRORS_WARN        0x400000U /* Added to libpng-1.6.0 */
-                                  /*    0x800000U    unused */
+#define PNG_FLAG_ROW_PAUSED             0x800000U
+   /* A progressive row is awaiting confirmation: the row confirm callback
+    * returned PNG_ROW_DEFER and row delivery is paused until the next call
+    * to png_process_data.
+    */
                                   /*   0x1000000U    unused */
                                   /*   0x2000000U    unused */
                                   /*   0x4000000U    unused */
@@ -1266,6 +1270,9 @@ PNG_INTERNAL_FUNCTION(void, png_write_start_row,
 #endif
 PNG_INTERNAL_FUNCTION(void, png_combine_row,
    (const png_struct *png_ptr, png_byte *row, int display),
+   PNG_EMPTY);
+PNG_INTERNAL_FUNCTION(void, png_combine_row_pass,
+   (const png_struct *png_ptr, png_byte *row, int display, unsigned int pass),
    PNG_EMPTY);
 
 #ifdef PNG_READ_INTERLACING_SUPPORTED

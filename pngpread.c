@@ -55,9 +55,25 @@ png_process_data(png_struct *png_ptr, png_info *info_ptr,
 
    png_push_restore_buffer(png_ptr, buffer, buffer_size);
 
+   /* Supplying more data confirms any row deferred by the row confirmation
+    * callback and allows row delivery to resume.
+    */
+   png_ptr->flags &= ~PNG_FLAG_ROW_PAUSED;
+
    while (png_ptr->buffer_size)
    {
       png_process_some_data(png_ptr, info_ptr);
+
+      if ((png_ptr->flags & PNG_FLAG_ROW_PAUSED) != 0)
+      {
+         /* The row confirmation callback deferred a row.  Stop processing
+          * and save the remaining input; it will be presented again, after
+          * the saved data, on the next call to this function.  The deferred
+          * row itself has already been delivered and will not be repeated.
+          */
+         png_push_save_buffer(png_ptr);
+         break;
+      }
    }
 }
 
@@ -627,15 +643,28 @@ png_push_read_IDAT(png_struct *png_ptr)
       else
          idat_size = (png_uint_32)save_size;
 
-      png_calculate_crc(png_ptr, png_ptr->save_buffer_ptr, save_size);
-
       png_process_IDAT_data(png_ptr, png_ptr->save_buffer_ptr, save_size);
+
+      if ((png_ptr->flags & PNG_FLAG_ROW_PAUSED) != 0)
+      {
+         /* Row delivery is paused: only part of the data may have been
+          * consumed.  Account for (and CRC) just the consumed bytes; the
+          * remainder stays in the save buffer for the next call.
+          */
+         save_size -= png_ptr->zstream.avail_in;
+         idat_size = (png_uint_32)save_size;
+      }
+
+      png_calculate_crc(png_ptr, png_ptr->save_buffer_ptr, save_size);
 
       png_ptr->idat_size -= idat_size;
       png_ptr->buffer_size -= save_size;
       png_ptr->save_buffer_size -= save_size;
       png_ptr->save_buffer_ptr += save_size;
    }
+
+   if ((png_ptr->flags & PNG_FLAG_ROW_PAUSED) != 0)
+      return; /* Remaining input is saved by png_process_data */
 
    if (png_ptr->idat_size != 0 && png_ptr->current_buffer_size != 0)
    {
@@ -653,15 +682,25 @@ png_push_read_IDAT(png_struct *png_ptr)
       else
          idat_size = (png_uint_32)save_size;
 
-      png_calculate_crc(png_ptr, png_ptr->current_buffer_ptr, save_size);
-
       png_process_IDAT_data(png_ptr, png_ptr->current_buffer_ptr, save_size);
+
+      if ((png_ptr->flags & PNG_FLAG_ROW_PAUSED) != 0)
+      {
+         /* As above: only the consumed bytes are accounted for here. */
+         save_size -= png_ptr->zstream.avail_in;
+         idat_size = (png_uint_32)save_size;
+      }
+
+      png_calculate_crc(png_ptr, png_ptr->current_buffer_ptr, save_size);
 
       png_ptr->idat_size -= idat_size;
       png_ptr->buffer_size -= save_size;
       png_ptr->current_buffer_size -= save_size;
       png_ptr->current_buffer_ptr += save_size;
    }
+
+   if ((png_ptr->flags & PNG_FLAG_ROW_PAUSED) != 0)
+      return; /* Remaining input is saved by png_process_data */
 
    if (png_ptr->idat_size == 0)
    {
@@ -762,6 +801,13 @@ png_process_IDAT_data(png_struct *png_ptr, png_byte *buffer,
          return;
       }
 
+      /* Check for the end of the stream first: this must not be skipped
+       * when row delivery is paused below, otherwise the end of the zlib
+       * stream would be lost.
+       */
+      if (ret == Z_STREAM_END)
+         png_ptr->flags |= PNG_FLAG_ZSTREAM_ENDED;
+
       /* Did inflate output any data? */
       if (png_ptr->zstream.next_out != png_ptr->row_buf)
       {
@@ -786,18 +832,23 @@ png_process_IDAT_data(png_struct *png_ptr, png_byte *buffer,
          /* Do we have a complete row? */
          if (png_ptr->zstream.avail_out == 0)
             png_push_process_row(png_ptr);
-      }
 
-      /* And check for the end of the stream. */
-      if (ret == Z_STREAM_END)
-         png_ptr->flags |= PNG_FLAG_ZSTREAM_ENDED;
+         /* The row confirmation callback may have deferred a row; if so
+          * stop here and leave the unprocessed input in zstream.avail_in
+          * for the caller to save.  Processing resumes, after the deferred
+          * row, on the next call to png_process_data.
+          */
+         if ((png_ptr->flags & PNG_FLAG_ROW_PAUSED) != 0)
+            break;
+      }
    }
 
    /* All the data should have been processed, if anything
     * is left at this point we have bytes of IDAT data
     * after the zlib end code.
     */
-   if (png_ptr->zstream.avail_in > 0)
+   if (png_ptr->zstream.avail_in > 0 &&
+       (png_ptr->flags & PNG_FLAG_ROW_PAUSED) == 0)
       png_warning(png_ptr, "Extra compression data in IDAT");
 }
 
@@ -1093,6 +1144,27 @@ png_push_have_end(png_struct *png_ptr, png_info *info_ptr)
 void /* PRIVATE */
 png_push_have_row(png_struct *png_ptr, png_byte *row)
 {
+   if (png_ptr->row_confirm_fn != NULL)
+   {
+      /* Row confirmation is enabled: the callback receives the row and
+       * decides whether to accept it now or to defer it.  When the row is
+       * deferred delivery pauses once the current row has been finished;
+       * the row itself is delivered only once, by this call.
+       */
+      if ((*(png_ptr->row_confirm_fn))(png_ptr, row, png_ptr->row_number,
+          (int)png_ptr->pass) == PNG_ROW_DEFER)
+      {
+         /* Remember the pass in which the row was delivered so that a
+          * deferred png_progressive_combine_row uses the correct pixel mask
+          * even if the interlace pass advances before the row is combined.
+          */
+         png_ptr->deferred_pass = png_ptr->pass;
+         png_ptr->flags |= PNG_FLAG_ROW_PAUSED;
+      }
+
+      return;
+   }
+
    if (png_ptr->row_fn != NULL)
       (*(png_ptr->row_fn))(png_ptr, row, png_ptr->row_number,
           (int)png_ptr->pass);
@@ -1111,7 +1183,20 @@ png_progressive_combine_row(const png_struct *png_ptr, png_byte *old_row,
     * it must be png_ptr->row_buf+1
     */
    if (new_row != NULL)
+   {
+      if ((png_ptr->flags & PNG_FLAG_ROW_PAUSED) != 0)
+      {
+         /* The application is combining a deferred row: the interlace pass
+          * may have advanced since the row was delivered, so use the pass
+          * recorded when the row was deferred.
+          */
+         png_combine_row_pass(png_ptr, old_row, 1/*blocky display*/,
+             png_ptr->deferred_pass);
+         return;
+      }
+
       png_combine_row(png_ptr, old_row, 1/*blocky display*/);
+   }
 }
 #endif /* READ_INTERLACING */
 
@@ -1128,6 +1213,19 @@ png_set_progressive_read_fn(png_struct *png_ptr, void *progressive_ptr,
    png_ptr->end_fn = end_fn;
 
    png_set_read_fn(png_ptr, progressive_ptr, png_push_fill_buffer);
+}
+
+void
+png_set_progressive_row_confirm_fn(png_struct *png_ptr,
+    png_progressive_row_confirm_ptr row_confirm_fn)
+{
+   if (png_ptr == NULL)
+      return;
+
+   png_ptr->row_confirm_fn = row_confirm_fn;
+
+   if (row_confirm_fn == NULL)
+      png_ptr->flags &= ~PNG_FLAG_ROW_PAUSED;
 }
 
 #ifdef PNG_READ_APNG_SUPPORTED

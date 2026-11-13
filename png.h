@@ -748,6 +748,18 @@ typedef PNG_CALLBACK(void, *png_progressive_frame_ptr,
  */
 typedef PNG_CALLBACK(void, *png_progressive_row_ptr,
    (png_struct *, png_byte *, png_uint_32, int));
+
+/* Row confirmation callback.  This has the same parameters as the row
+ * callback above but returns a value telling the library whether the
+ * application accepts the row (PNG_ROW_CONFIRM) or needs to defer it
+ * (PNG_ROW_DEFER).  See png_set_progressive_row_confirm_fn below.
+ */
+typedef PNG_CALLBACK(int, *png_progressive_row_confirm_ptr,
+   (png_struct *, png_byte *, png_uint_32, int));
+
+/* Return values for a png_progressive_row_confirm_ptr callback. */
+#define PNG_ROW_CONFIRM 1 /* row accepted: continue delivering rows */
+#define PNG_ROW_DEFER   0 /* row deferred: pause row delivery */
 #endif
 
 #if defined(PNG_READ_USER_TRANSFORM_SUPPORTED) || \
@@ -1715,6 +1727,39 @@ PNG_EXPORT(png_uint_32, png_process_data_skip,
 PNG_EXPORT(void, png_progressive_combine_row,
    (const png_struct *png_ptr,
     png_byte *old_row, const png_byte *new_row));
+
+/* Sets a row confirmation callback for the push reader.  When this callback
+ * is set it is called instead of the row callback passed to
+ * png_set_progressive_read_fn, with the same (row, row_number, pass)
+ * arguments, in the same order.
+ *
+ * If the callback returns PNG_ROW_CONFIRM the row is accepted and decoding
+ * continues as usual.  If it returns PNG_ROW_DEFER the row is deferred:
+ * libpng finishes the row currently being decoded, saves any unprocessed
+ * input internally and returns from png_process_data without delivering any
+ * further rows.  The deferred row is delivered only once - it is not
+ * presented again when processing resumes.  Its pixel data remains available
+ * to png_progressive_combine_row until the next call to png_process_data,
+ * so the application may combine it whenever it is ready.
+ *
+ * The next call to png_process_data confirms the deferred row and resumes
+ * decoding where it stopped; subsequent rows are again offered to the
+ * confirmation callback one by one.  For interlaced images handled with
+ * png_set_interlace_handling the pause takes effect at the end of the group
+ * of display rows produced from the currently decoded row, so the sequence
+ * of (row_number, pass) values and the combined pixels are identical to
+ * those seen without row confirmation.
+ *
+ * A truncated or damaged stream never produces the end callback, and the
+ * paused state is reset by png_process_data and by the per-frame reset
+ * performed for APNG streams, so it cannot affect the following image.
+ *
+ * Pass NULL to disable row confirmation and restore the row callback set
+ * with png_set_progressive_read_fn.
+ */
+PNG_EXPORT(void, png_set_progressive_row_confirm_fn,
+   (png_struct *png_ptr,
+    png_progressive_row_confirm_ptr row_confirm_fn));
 #endif /* PROGRESSIVE_READ */
 
 PNG_EXPORTA(void *, png_malloc,

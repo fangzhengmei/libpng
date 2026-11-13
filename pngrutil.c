@@ -3397,12 +3397,12 @@ png_handle_chunk(png_struct *png_ptr, png_info *info_ptr, png_uint_32 length)
  * 'display' is false only those pixels present in the pass are filled in.
  */
 void /* PRIVATE */
-png_combine_row(const png_struct *png_ptr, png_byte *dp, int display)
+png_combine_row_pass(const png_struct *png_ptr, png_byte *dp, int display,
+    unsigned int pass)
 {
    unsigned int pixel_depth = png_ptr->transformed_pixel_depth;
    const png_byte *sp = png_ptr->row_buf + 1;
    png_alloc_size_t row_width = png_ptr->width;
-   unsigned int pass = png_ptr->pass;
    png_byte *end_ptr = NULL;
    png_byte end_byte = 0;
    unsigned int end_mask;
@@ -3877,6 +3877,12 @@ png_combine_row(const png_struct *png_ptr, png_byte *dp, int display)
    /* Restore the overwritten bits from the last byte if necessary. */
    if (end_ptr != NULL)
       *end_ptr = (png_byte)((end_byte & end_mask) | (*end_ptr & ~end_mask));
+}
+
+void /* PRIVATE */
+png_combine_row(const png_struct *png_ptr, png_byte *dp, int display)
+{
+   png_combine_row_pass(png_ptr, dp, display, png_ptr->pass);
 }
 
 #ifdef PNG_READ_INTERLACING_SUPPORTED
@@ -4929,6 +4935,7 @@ png_progressive_read_reset(png_struct *png_ptr)
       png_ptr->iwidth = png_ptr->width;
    }
    png_ptr->flags &= ~PNG_FLAG_ZSTREAM_ENDED;
+   png_ptr->flags &= ~PNG_FLAG_ROW_PAUSED;
    if (inflateReset(&(png_ptr->zstream)) != Z_OK)
       png_error(png_ptr, "inflateReset failed");
    png_ptr->zstream.avail_in = 0;

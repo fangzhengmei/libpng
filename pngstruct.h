@@ -300,6 +300,9 @@ struct png_struct_def
    png_progressive_info_ptr info_fn; /* called after header data fully read */
    png_progressive_row_ptr row_fn;   /* called after a prog. row is decoded */
    png_progressive_end_ptr end_fn;   /* called after image is complete */
+   png_progressive_row_confirm_ptr row_confirm_fn;
+                                   /* called to confirm each prog. row */
+   png_byte deferred_pass;         /* pass of a deferred prog. row */
    png_byte *save_buffer_ptr;        /* current location in save_buffer */
    png_byte *save_buffer;            /* buffer for previously read data */
    png_byte *current_buffer_ptr;     /* current location in current_buffer */
